@@ -4,6 +4,7 @@ dataset:
   batch_size: 1
   patch_size: [192, 192, 192]
   seed: 42
+  train_max_cases: 20
 
 model:
   dir: ./models/voxtell_v1.1
@@ -27,7 +28,7 @@ continual:
   output_dir: /home/vault/iwi5/iwi5326h/projects/VoxTell/experiments/continual/lora/shared
   from_scratch: false
   lora:
-    rank: 256
+    rank: 1024
     alpha: 32
     dropout: 0.1
     # Restrict LoRA to TransformerDecoderLayer attention modules only.

@@ -31,7 +31,7 @@ continual:
     fraction: 0.1
     max_size: 200
   lora:
-    rank: 128
+    rank: 1024
     alpha: 32
     dropout: 0.1
     # Restrict LoRA to TransformerDecoderLayer attention modules only.

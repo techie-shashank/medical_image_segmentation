@@ -27,7 +27,7 @@ continual:
   output_dir: /home/vault/iwi5/iwi5326h/projects/VoxTell/experiments/continual/lora/shared
   from_scratch: false
   lora:
-    rank: 128
+    rank: 1024
     alpha: 32
     dropout: 0.1
     # Restrict LoRA to TransformerDecoderLayer attention modules only.
