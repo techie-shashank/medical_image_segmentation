@@ -96,8 +96,6 @@ ENV/
 # Medical Imaging & Data Files
 # ==============================================================================
 
-data/
-
 # NIfTI files
 *.nii
 *.nii.gz
