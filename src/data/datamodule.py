@@ -38,11 +38,31 @@ class VoxTellDataModule:
         
         self.filter_img_list = cfg.get("filter_img_list")
         self.replay_train_samples = list(cfg.get("replay_train_samples", []) or [])
+        # Joint training: build the splits of every listed dataset (one per task) and concatenate them.
+        self.joint_names = list(cfg.get("joint_names", []) or [])
 
         if not (self.train_root):
             raise ValueError("dataset.root must be provided")
 
-        self.train_samples, self.val_samples, self.test_samples = self._build_splits()
+        if self.joint_names:
+            self.train_samples, self.val_samples, self.test_samples = self._build_joint_splits()
+        else:
+            self.train_samples, self.val_samples, self.test_samples = self._build_splits()
+
+    def _build_joint_splits(self):
+        train, val, test = [], [], []
+        replay, self.replay_train_samples = self.replay_train_samples, []   # add replay samples once, not per dataset
+        for name in self.joint_names:
+            self.dataset_name = name
+            tr, va, te = self._build_splits()
+            train.extend(tr)
+            val.extend(va)
+            test.extend(te)
+        self.replay_train_samples = replay
+        train.extend(replay)
+        self.dataset_name = "joint:" + "+".join(self.joint_names)
+        logger.info("Joint splits over %d datasets: %d/%d/%d samples", len(self.joint_names), len(train), len(val), len(test))
+        return train, val, test
 
     def _build_splits(self):
         adapter = get_dataset_adapter(

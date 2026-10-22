@@ -21,6 +21,11 @@ class LoRAStrategy(BaseContinualStrategy):
             lora_cfg=self.task_manager.lora_cfg
         )
 
+    def restore_after_task(self, task: ContinualTask, task_dir: Path) -> None:
+        # Every task starts from the pretrained model with a new adapter (configure_engine),
+        # so nothing is carried forward between tasks.
+        return None
+
     def after_task(
         self,
         task: ContinualTask,

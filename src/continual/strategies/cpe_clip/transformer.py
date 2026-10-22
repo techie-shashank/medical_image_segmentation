@@ -24,7 +24,8 @@ class CPECLIPTransformerDecoder(nn.Module):
         prompt_tokens: int = 4,
         prompt_layers: Optional[int] = None,
         method: str = "replacement",
-        text_prompting = True
+        text_prompting = True,
+        scale_meta_net: bool = False,
     ):
         super().__init__()
 
@@ -39,6 +40,8 @@ class CPECLIPTransformerDecoder(nn.Module):
         self.prompt_layers = min(prompt_layers, self.num_layers)
         self.method = method
         self.text_prompting = text_prompting
+        self.scale_meta_net = bool(scale_meta_net)
+        self.session_alpha = 1.0
 
         # Learnable G-prompts
         self.g_values = nn.Parameter(
@@ -83,6 +86,11 @@ class CPECLIPTransformerDecoder(nn.Module):
             return grad * float(self.session_alpha)
 
         self.g_values.register_hook(scale_grad)
+        if self.text_prompting and self.scale_meta_net:
+            for param in self.meta_net.parameters():
+                param.register_hook(scale_grad)
+        logger.info("CPE-CLIP gradient scaling hooks registered | tokens=True | meta_net=%s",
+                    bool(self.text_prompting and self.scale_meta_net))
 
         self._gradient_hooks_registered = True
     

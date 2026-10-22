@@ -3,10 +3,15 @@ from __future__ import annotations
 from abc import ABC
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import hashlib
 import json
 import random
+import subprocess
 from pathlib import Path
 from typing import Any
+
+import torch
+import yaml
 
 from src.continual.utils import build_base_model_cfg, save_task_snapshot
 from src.continual.task_manager import ContinualTask, ContinualTaskManager, merge_dicts
@@ -170,6 +175,49 @@ class BaseContinualStrategy(ABC):
             dataset_cfg["replay_train_samples"] = list(self.replay_memory)
         return dataset_cfg
 
+    def _record_run_info(self) -> None:
+        """Append the code version and a hash of the config to run_info.json (one entry per job)."""
+        code_root = Path(__file__).resolve().parents[3]
+
+        def git(*args: str) -> str:
+            try:
+                out = subprocess.run(["git", "-C", str(code_root), *args], capture_output=True, text=True, timeout=30)
+                return out.stdout.strip()
+            except Exception:  # git not available
+                return ""
+
+        info = {
+            "timestamp": self._timestamp(),
+            "git_commit": git("rev-parse", "HEAD"),
+            "git_dirty": bool(git("status", "--porcelain")),
+            "config_sha256": hashlib.sha256(yaml.safe_dump(self.cfg, sort_keys=True).encode("utf-8")).hexdigest(),
+        }
+        path = self.dirs["root"] / "run_info.json"
+        entries = json.loads(path.read_text()) if path.exists() else []
+        entries.append(info)
+        path.write_text(json.dumps(entries, indent=2))
+        self.logger.info("Run info | commit=%s | dirty=%s | config_sha256=%s",
+                         info["git_commit"], info["git_dirty"], info["config_sha256"])
+
+    def restore_after_task(self, task: ContinualTask, task_dir: Path) -> None:
+        """Load the state carried forward after `task` when a job resumes at a task boundary.
+
+        Default: the parameters after the last epoch of that task (checkpoints/last_model.pt).
+        Strategies that restart every task from the pretrained model override this with a no-op.
+        """
+        engine = self.require_engine()
+        path = task_dir / "checkpoints" / "last_model.pt"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Cannot resume after task {task.name}: {path} is missing, so the carried-forward state is unknown"
+            )
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        engine.model.load_state_dict(checkpoint["network_weights"])
+        self.logger.info("Restored the state after task %s from %s", task.name, path)
+
+    def on_task_start(self, task: ContinualTask, task_dir: Path, resuming_within_task: bool) -> None:
+        return None
+
     def run(self) -> None:
         state = self._load_state()
         start_task_index, resume_checkpoint = self._resolve_resume_plan(state)
@@ -177,6 +225,8 @@ class BaseContinualStrategy(ABC):
         if start_task_index >= len(self.tasks):
             self.logger.info("All continual tasks are already completed for run root: %s", self.dirs["root"])
             return
+
+        self._record_run_info()
 
         self.logger.info(
             "Continual resume plan | start_task=%d/%d | checkpoint=%s",
@@ -188,8 +238,15 @@ class BaseContinualStrategy(ABC):
         self._initialize_replay_memory()
         self.engine = self.build_engine()
 
+        # A job that resumes at a task boundary (no checkpoint inside the next task) must start the
+        # next task from the state after the previous one, not from the pretrained model.
+        if start_task_index > 0 and resume_checkpoint is None:
+            previous = self.tasks[start_task_index - 1]
+            self.restore_after_task(previous, self.dirs["root"] / "tasks" / self.task_manager.task_dir_name(previous))
+
         for task in self.tasks[start_task_index:]:
-            
+
+            self._active_task_index = task.index   # read by strategies with per-task settings (CPE-CLIP)
             self.configure_engine()
             log_model_params(self.engine.model)
             
@@ -215,6 +272,7 @@ class BaseContinualStrategy(ABC):
             trainer = Trainer(self.engine, task_training_cfg, hooks=self, task=task)
             self.logger.info("Training task %d/%d: %s", task.index + 1, len(self.tasks), task.name)
             task_resume_checkpoint = resume_checkpoint if task.index == start_task_index else None
+            self.on_task_start(task, task_dir, resuming_within_task=task_resume_checkpoint is not None)
             task_metrics = trainer.fit(datamodule, resume_from=task_resume_checkpoint)
             self.logger.info("Task %s training completed", task.name)
 
@@ -227,13 +285,20 @@ class BaseContinualStrategy(ABC):
                     self._replay_fraction(),
                 )
 
+            # Final files of the task (LoRA adapter, ZSCL ensemble) are written before the task is marked
+            # completed, so that a job ending in between repeats after_task instead of losing these files.
+            self.after_task(task, task_dir, task_training_cfg, task_metrics=task_metrics)
+
             completed = {int(i) for i in state.get("completed_tasks", [])}
             completed.add(task.index)
             state["completed_tasks"] = sorted(completed)
             state["current_checkpoint"] = None
             self._save_state(state)
 
-            self.after_task(task, task_dir, task_training_cfg, task_metrics=task_metrics)
+            # Recovery checkpoints are only needed to resume inside a task; remove them to save storage.
+            for recovery in (task_dir / "checkpoints").glob("*_recovery.pt"):
+                recovery.unlink()
+                self.logger.info("Removed recovery checkpoint %s", recovery)
 
         state["status"] = "completed"
         state["current_checkpoint"] = None

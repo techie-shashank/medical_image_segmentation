@@ -24,8 +24,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--checkpoint_name",
-        default="best_model.pt",
-        help="Checkpoint filename to evaluate inside each task checkpoint directory",
+        default=None,
+        help="Checkpoint filename to evaluate inside each task checkpoint directory "
+             "(default: continual.evaluation.checkpoint of the run config, else best_model.pt)",
+    )
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Write this evaluation into evaluations/<tag>/ instead of the experiment root",
     )
     return parser.parse_args()
 
@@ -33,7 +39,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     logger.info("Running continual experiment evaluation from %s", args.experiment_root)
-    evaluate_continual_experiment(Path(args.experiment_root), checkpoint_name=args.checkpoint_name)
+    evaluate_continual_experiment(Path(args.experiment_root), checkpoint_name=args.checkpoint_name, tag=args.tag)
 
 
 if __name__ == "__main__":

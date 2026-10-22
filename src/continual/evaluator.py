@@ -4,10 +4,12 @@ from importlib import import_module
 
 from pathlib import Path
 import csv
+import gc
 import json
 
 import numpy as np
 import pandas as pd
+import torch
 
 from src.continual.metrics import compute_all_metrics
 from src.continual.task_manager import ContinualTaskManager, merge_dicts
@@ -69,10 +71,25 @@ def _load_experiment_config(experiment_root: Path) -> dict:
 
 
 class ContinualExperimentEvaluator:
-    def __init__(self, experiment_root: str | Path, checkpoint_name: str = "best_model.pt") -> None:
+    def __init__(
+        self,
+        experiment_root: str | Path,
+        checkpoint_name: str | None = None,
+        tag: str | None = None,
+    ) -> None:
         self.experiment_root = Path(experiment_root)
-        self.checkpoint_name = checkpoint_name
         self.cfg = _load_experiment_config(self.experiment_root)
+        eval_cfg = dict(self.cfg.get("continual", {}).get("evaluation", {}) or {})
+
+        # Checkpoint evaluated for strategies that keep full checkpoints (LoRA strategies use their adapters).
+        # Default "best_model.pt" keeps the behaviour of runs made before 2026-10-22.
+        self.checkpoint_name = checkpoint_name or str(eval_cfg.get("checkpoint", "best_model.pt"))
+        # A tag writes this evaluation into evaluations/<tag>/ and test_<tag>/ folders, so that several
+        # evaluations of one run (e.g. last epoch, best validation, weight ensemble) do not overwrite each other.
+        self.tag = tag
+        self.output_root = self.experiment_root if tag is None else self.experiment_root / "evaluations" / tag
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        self.test_dir_name = "test" if tag is None else f"test_{tag}"
 
         self.task_manager = ContinualTaskManager(self.cfg)
         self.training_tasks = self.task_manager.tasks()
@@ -80,19 +97,26 @@ class ContinualExperimentEvaluator:
             raise ValueError("continual.tasks must contain at least one task")
 
         self.retention_tasks = self.task_manager.retention_tasks()
-        self.evaluation_tasks = self.training_tasks + self.retention_tasks
+        # continual.evaluation.tasks lets the evaluated tasks differ from the trained ones
+        # (joint training: one training task, evaluated on every structure).
+        if eval_cfg.get("tasks"):
+            self.row_tasks = self.task_manager._build_tasks(list(eval_cfg["tasks"]))
+        else:
+            self.row_tasks = self.training_tasks
+        self.evaluation_tasks = self.row_tasks + self.retention_tasks
         self.model_tasks = self.training_tasks
 
         self.pretrained_model_cfg = dict(self.task_manager.base_model_cfg)
         self.trained_model_cfgs = [merge_dicts(self.task_manager.base_model_cfg, task.model_cfg) for task in self.training_tasks]
         self.strategy_class = get_strategy_class(self.task_manager.strategy)
 
-        self.row_labels = [f"{task.name} (CL)" for task in self.training_tasks]
+        self.row_labels = [f"{task.name} (CL)" for task in self.row_tasks]
         self.row_labels.extend([f"{task.name} (Retention)" for task in self.retention_tasks])
         self.column_labels = ["Pretrained"]
         self.column_labels.extend([f"After {task.name}" for task in self.training_tasks])
 
-        logger.info("Evaluating continual experiment at %s", self.experiment_root)
+        logger.info("Evaluating continual experiment at %s | checkpoint=%s | tag=%s",
+                    self.experiment_root, self.checkpoint_name, self.tag)
         logger.info(
             "Tasks=%d | retention=%d | strategy=%s",
             len(self.training_tasks),
@@ -106,7 +130,7 @@ class ContinualExperimentEvaluator:
                 model_cfg=self.pretrained_model_cfg,
                 eval_cfg={
                     "output_dir": str(
-                        self.experiment_root / "tasks" / "pretrained" / self.task_manager.task_dir_name(evaluation_task) / "test"
+                        self.experiment_root / "tasks" / "pretrained" / self.task_manager.task_dir_name(evaluation_task) / self.test_dir_name
                     )
                 },
             )
@@ -121,7 +145,7 @@ class ContinualExperimentEvaluator:
             checkpoint_name=self.checkpoint_name,
             evaluation_task=evaluation_task,
         )
-        output_dir = task_dir / self.task_manager.task_dir_name(evaluation_task) / "test"
+        output_dir = task_dir / self.task_manager.task_dir_name(evaluation_task) / self.test_dir_name
         return Evaluator(
             model_cfg=evaluation_spec.model_cfg,
             eval_cfg={"output_dir": str(output_dir), **evaluation_spec.eval_cfg},
@@ -131,7 +155,7 @@ class ContinualExperimentEvaluator:
         rows = len(self.evaluation_tasks)
         cols = 1 + len(self.training_tasks)
 
-        saved_raw_metrics, saved_prompt_set, saved_prompt_to_task = _load_evaluation_state(self.experiment_root)
+        saved_raw_metrics, saved_prompt_set, saved_prompt_to_task = _load_evaluation_state(self.output_root)
         raw_metrics = [[None for _ in range(cols)] for _ in range(rows)]
 
         if saved_raw_metrics:
@@ -158,6 +182,12 @@ class ContinualExperimentEvaluator:
                 )
 
                 raw_metrics[row_idx][col_idx] = metrics
+                # Every cell loads its own text encoder and model; release them before the next cell so that
+                # host and GPU memory do not grow over the (T+1)^2 cells of one or several evaluations.
+                del evaluator
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
                 for k in metrics.keys():
                     if k not in ("Average Dice", "Average Loss"):
@@ -167,7 +197,7 @@ class ContinualExperimentEvaluator:
                         if k not in self.prompt_to_task:
                             self.prompt_to_task[k] = row_idx
 
-                _save_evaluation_state(self.experiment_root, raw_metrics, prompt_set, self.prompt_to_task)
+                _save_evaluation_state(self.output_root, raw_metrics, prompt_set, self.prompt_to_task)
 
         self.prompt_list = sorted(prompt_set)
 
@@ -212,8 +242,13 @@ class ContinualExperimentEvaluator:
         )
 
         df.to_csv(
-            self.experiment_root / "eval_matrix.csv"
+            self.output_root / "eval_matrix.csv"
         )
+        if len(self.row_tasks) != len(self.training_tasks):
+            # Joint training: the legacy CL metrics below assume one row per training task.
+            logger.info("Evaluation rows differ from training tasks; skipping legacy metrics.json")
+            self._save_prompt_matrices()
+            return
 
         # ---------------------------
         # Continual Learning metrics (A, F)
@@ -282,7 +317,7 @@ class ContinualExperimentEvaluator:
         }
 
         with open(
-            self.experiment_root / "metrics.json",
+            self.output_root / "metrics.json",
             "w",
         ) as f:
             json.dump(
@@ -291,10 +326,13 @@ class ContinualExperimentEvaluator:
                 indent=4,
             )
 
+        self._save_prompt_matrices()
+
+    def _save_prompt_matrices(self):
         # ==================================================
         # Save prompt-level matrices (diagnostics only)
         # ==================================================
-        per_prompt_dir = self.experiment_root / "per_prompt"
+        per_prompt_dir = self.output_root / "per_prompt"
         per_prompt_dir.mkdir(parents=True, exist_ok=True)
 
         for prompt, mat in self.per_prompt_matrices.items():
@@ -332,8 +370,9 @@ class ContinualExperimentEvaluator:
 def evaluate_continual_experiment(
     experiment_root: str | Path,
     *,
-    checkpoint_name: str = "best_model.pt",
+    checkpoint_name: str | None = None,
+    tag: str | None = None,
 ) -> dict:
     _load_builtin_strategies()
-    evaluator = ContinualExperimentEvaluator(experiment_root, checkpoint_name)
+    evaluator = ContinualExperimentEvaluator(experiment_root, checkpoint_name, tag)
     return evaluator.run()

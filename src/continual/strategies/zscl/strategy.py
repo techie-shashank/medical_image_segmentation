@@ -30,6 +30,7 @@ class ZSCLStrategy(BaseContinualStrategy):
         self.teacher_model: torch.nn.Module | None = None
         self.ensemble_model: torch.nn.Module | None = None
         self._ensemble_steps = 0
+        self._ensemble_dirty = False   # ensemble changed since the last recovery save
 
         continual_cfg = dict(self.cfg.get("continual", {}))
         zscl_cfg = dict(continual_cfg.get("zscl", {}))
@@ -172,6 +173,48 @@ class ZSCLStrategy(BaseContinualStrategy):
             for name in current_state
         }
         self.ensemble_model.load_state_dict(blended, strict=True)
+        self._ensemble_dirty = True
+
+    # ------------------------------------------------------------------
+    # Persistence of the weight ensemble (evaluation and job resumes)
+    # ------------------------------------------------------------------
+    def _save_ensemble(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"network_weights": self.ensemble_model.state_dict(), "ensemble_steps": int(self._ensemble_steps)},
+            str(path),
+        )
+
+    def _load_ensemble(self, path: Path) -> None:
+        checkpoint = torch.load(str(path), map_location="cpu", weights_only=False)
+        self.ensemble_model.load_state_dict(checkpoint["network_weights"], strict=True)
+        self._ensemble_steps = int(checkpoint.get("ensemble_steps", 0))
+        self._ensemble_dirty = False
+        self.logger.info("Restored weight ensemble from %s (steps=%d)", path, self._ensemble_steps)
+
+    def on_recovery_checkpoint(self, *, task, checkpoint_path, epoch, batch_idx, stage) -> None:
+        super().on_recovery_checkpoint(
+            task=task, checkpoint_path=checkpoint_path, epoch=epoch, batch_idx=batch_idx, stage=stage
+        )
+        if self.ensemble_model is not None and self._ensemble_dirty:
+            self._save_ensemble(Path(checkpoint_path).parent / "ensemble_recovery.pt")
+            self._ensemble_dirty = False
+
+    def on_task_start(self, task: ContinualTask, task_dir: Path, resuming_within_task: bool) -> None:
+        if not resuming_within_task or self.ensemble_model is None:
+            return
+        recovery = task_dir / "checkpoints" / "ensemble_recovery.pt"
+        if recovery.exists():
+            self._load_ensemble(recovery)
+        elif task.index > 0:
+            previous = self.tasks[task.index - 1]
+            previous_dir = self.dirs["root"] / "tasks" / self.task_manager.task_dir_name(previous)
+            self._load_ensemble(previous_dir / "checkpoints" / "ensemble_model.pt")
+
+    def restore_after_task(self, task: ContinualTask, task_dir: Path) -> None:
+        super().restore_after_task(task, task_dir)
+        if self.ensemble_model is not None:
+            self._load_ensemble(task_dir / "checkpoints" / "ensemble_model.pt")
 
     def after_task(
         self,
@@ -183,9 +226,11 @@ class ZSCLStrategy(BaseContinualStrategy):
         if self.ensemble_model is None:
             return
 
-        ensemble_path = task_dir / "best_model.pt"
-        torch.save({"network_weights": self.ensemble_model.state_dict()}, str(ensemble_path))
-        self.logger.info("Saved ZSCL weight ensemble snapshot to %s", ensemble_path)
+        # Saved next to the student checkpoints so that the evaluator can load it with
+        # checkpoint_name="ensemble_model.pt" (the earlier location task_dir/best_model.pt was not evaluated).
+        ensemble_path = task_dir / "checkpoints" / "ensemble_model.pt"
+        self._save_ensemble(ensemble_path)
+        self.logger.info("Saved ZSCL weight ensemble snapshot to %s (steps=%d)", ensemble_path, self._ensemble_steps)
 
 
 def run_zscl_strategy(

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from src.continual.strategies.lora.loading import configure_loaded_lora_model
-from src.continual.strategies.lora.common.utils import save_lora_adapter
+from src.continual.strategies.lora.common.utils import load_lora_adapter, save_lora_adapter
 from src.continual.task_manager import ContinualTask, ContinualTaskManager
 from src.continual.strategies.base import BaseContinualStrategy, EvaluationSpec
 from src.continual.strategies.registry import register_strategy
@@ -26,6 +26,12 @@ class SharedLoRAStrategy(BaseContinualStrategy):
         self.logger.info("Shared LoRA adaptation complete. Model ready for continual learning.")
 
         return engine
+
+    def restore_after_task(self, task: ContinualTask, task_dir: Path) -> None:
+        engine = self.require_engine()
+        bias = str(self.task_manager.lora_cfg.get("bias", "none"))
+        load_lora_adapter(engine.model, task_dir / "lora_adapter.pt", bias=bias, mark_trainable=True)
+        self.logger.info("Restored the shared LoRA adapter after task %s", task.name)
 
     def after_task(
         self,

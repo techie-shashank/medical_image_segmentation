@@ -79,6 +79,9 @@ def main():
 
     if args.evaluate:
         evaluate_continual_experiment(dirs["root"])
+        # Further evaluations of the same run, e.g. {tag: best_validation, checkpoint: best_model.pt}
+        for extra in task_manager.continual_cfg.get("evaluation", {}).get("extra", []) or []:
+            evaluate_continual_experiment(dirs["root"], checkpoint_name=extra["checkpoint"], tag=extra["tag"])
     else:
         logger.info("Skipping continual evaluation by request")
 

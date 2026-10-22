@@ -24,6 +24,7 @@ class CPECLIPConfig:
     prompt_init_std: float = 0.02
     regularization_method: str = "balance"
     trainable: bool = True
+    scale_meta_net: bool = False   # also scale the meta-net gradients by the per-task factor
 
 
 def _normalize_config(cfg: dict[str, Any] | None, model: VoxTellModel) -> CPECLIPConfig:
@@ -40,6 +41,7 @@ def _normalize_config(cfg: dict[str, Any] | None, model: VoxTellModel) -> CPECLI
         prompt_init_std=float(cfg.get("prompt_init_std", 0.02)),
         regularization_method=str(cfg.get("regularization_method", "balance")),
         trainable=bool(cfg.get("trainable", True)),
+        scale_meta_net=bool(cfg.get("scale_meta_net", False)),
     )
 
 
@@ -60,7 +62,8 @@ class CPECLIPPromptedVoxTell(nn.Module):
             decoder=original_decoder,
             query_dim=self.base_model.query_dim,
             prompt_tokens=self.config.prompt_tokens,
-            prompt_layers=self.config.prompt_layers
+            prompt_layers=self.config.prompt_layers,
+            scale_meta_net=self.config.scale_meta_net,
         )
         cpe_clip_decoder.set_trainable(self.config.trainable)
         if self.config.trainable:

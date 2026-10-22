@@ -238,6 +238,12 @@ class Trainer:
         )
         return start_epoch, start_batch
 
+    def _save_last_model(self, checkpoints_dir: Path) -> None:
+        """Save the parameters after the last epoch (the model carried forward to the next task)."""
+        path = checkpoints_dir / "last_model.pt"
+        torch.save({"network_weights": self.engine.model.state_dict()}, str(path))
+        self.run_logger.info("Last-epoch model saved at %s", path)
+
     def fit(self, datamodule, resume_from: str | Path | None = None):
 
         # Determinism / seeding
@@ -277,6 +283,8 @@ class Trainer:
                 "Resume checkpoint indicates training already finished for configured epochs=%d",
                 self.epochs,
             )
+            if not (checkpoints_dir / "last_model.pt").exists():
+                self._save_last_model(checkpoints_dir)
             final_train_loss = self.train_losses[-1] if self.train_losses else float("nan")
             final_val_loss = self.val_losses[-1] if self.val_losses else float("nan")
             return {
@@ -348,7 +356,8 @@ class Trainer:
             if improved:
                 self.best_val_loss = val_loss
                 best_path = checkpoints_dir / f"best_model.pt"
-                save_checkpoint(self.engine.model, self.optimizer, best_path)
+                # Weights only: the checkpoint is used for evaluation, never to resume (that uses latest_recovery.pt).
+                torch.save({"network_weights": self.engine.model.state_dict()}, str(best_path))
                 self.run_logger.info("New best model saved (val_loss=%.6f) at epoch=%d", val_loss, epoch)
                 self._no_improve_epochs = 0
             else:
@@ -372,6 +381,7 @@ class Trainer:
             # Reset resume offset after the first resumed epoch.
             start_batch = 0
         
+        self._save_last_model(checkpoints_dir)
         self.run_logger.info("Training completed successfully | Best validation loss: %.6f", self.best_val_loss)
         
         # Plot training loss

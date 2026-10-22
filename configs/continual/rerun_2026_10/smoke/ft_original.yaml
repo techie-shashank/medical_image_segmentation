@@ -1,0 +1,50 @@
+# SMOKE TEST ONLY (2 tasks, 1 epoch, 1 volume per split). Do not use for results.
+continual:
+  from_scratch: false
+  output_dir: /home/vault/iwi5/iwi5326h/projects/VoxTell/experiments/continual/smoke_test/ft_original
+  retention_tasks:
+  - dataset:
+      name: aeropath
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/AeroPath/
+    name: aeropath
+  tasks:
+  - dataset:
+      name: skm_tea_lateral_tibial
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_lateral_tibial
+  - dataset:
+      name: skm_tea_medial_tibial
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_medial_tibial
+  evaluation:
+    checkpoint: last_model.pt
+    extra:
+    - tag: best_validation
+      checkpoint: best_model.pt
+dataset:
+  batch_size: 1
+  patch_size:
+  - 192
+  - 192
+  - 192
+  seed: 42
+  train_fraction: 0.7
+  val_fraction: 0.15
+  train_max_cases: 1
+  val_max_cases: 1
+  test_max_cases: 1
+model:
+  deep_supervision: false
+  device: cuda
+  dir: ./models/voxtell_v1.1
+  reinit_weights: false
+training:
+  epochs: 1
+  optimizer:
+    lr: 0.0001
+    momentum: 0.99
+    nesterov: true
+    poly_power: 1.0
+    weight_decay: 3.0e-05
+  seed: 42
+  use_deterministic_algorithms: true
