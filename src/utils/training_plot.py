@@ -7,13 +7,15 @@ from src.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def plot_training_loss(train_losses, val_losses, plots_dir):
+def plot_training_loss(train_losses, val_losses, plots_dir, val_epochs=None):
     """
     Create plots of training and validation loss.
     Saves plots as PNG and metrics as JSON in the output directory.
+    val_epochs: 1-based epochs of the validation losses (default: every epoch).
     """
     
     epochs = np.arange(1, len(train_losses) + 1)
+    val_x = epochs if val_epochs is None else np.asarray(val_epochs)
     
     # Create figure with subplots
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -41,7 +43,7 @@ def plot_training_loss(train_losses, val_losses, plots_dir):
     
     # Plot 2: Validation Loss
     ax2 = axes[1]
-    ax2.plot(epochs, val_losses, marker='s', linestyle='-', linewidth=2, 
+    ax2.plot(val_x, val_losses, marker='s', linestyle='-', linewidth=2, 
                 markersize=6, color='#A23B72', label='Validation Loss')
     ax2.set_xlabel('Epoch', fontsize=11)
     ax2.set_ylabel('Loss', fontsize=11)
@@ -51,10 +53,10 @@ def plot_training_loss(train_losses, val_losses, plots_dir):
     
     # Add min annotation
     min_val_idx = np.argmin(val_losses)
-    ax2.scatter([epochs[min_val_idx]], [val_losses[min_val_idx]], 
+    ax2.scatter([val_x[min_val_idx]], [val_losses[min_val_idx]], 
                 color='red', s=100, zorder=5)
-    ax2.annotate(f'Best: {val_losses[min_val_idx]:.4f}\n(Epoch {epochs[min_val_idx]})',
-                xy=(epochs[min_val_idx], val_losses[min_val_idx]),
+    ax2.annotate(f'Best: {val_losses[min_val_idx]:.4f}\n(Epoch {val_x[min_val_idx]})',
+                xy=(val_x[min_val_idx], val_losses[min_val_idx]),
                 xytext=(10, 10), textcoords='offset points',
                 bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.7),
                 arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
@@ -63,7 +65,7 @@ def plot_training_loss(train_losses, val_losses, plots_dir):
     ax3 = axes[2]
     ax3.plot(epochs, train_losses, marker='o', linestyle='-', linewidth=2, 
                 markersize=6, color='#2E86AB', label='Training Loss')
-    ax3.plot(epochs, val_losses, marker='s', linestyle='-', linewidth=2, 
+    ax3.plot(val_x, val_losses, marker='s', linestyle='-', linewidth=2, 
                 markersize=6, color='#A23B72', label='Validation Loss')
     ax3.set_xlabel('Epoch', fontsize=11)
     ax3.set_ylabel('Loss', fontsize=11)
@@ -72,7 +74,8 @@ def plot_training_loss(train_losses, val_losses, plots_dir):
     ax3.legend()
     
     # Add shaded region between curves if they diverge significantly
-    divergence = np.abs(np.array(train_losses) - np.array(val_losses))
+    # Only defined when every epoch was validated.
+    divergence = np.abs(np.array(train_losses) - np.array(val_losses)) if len(val_losses) == len(train_losses) else np.zeros(1)
     if np.max(divergence) > 0.05:
         ax3.fill_between(epochs, train_losses, val_losses, alpha=0.2, color='gray')
     
@@ -100,7 +103,7 @@ def plot_training_loss(train_losses, val_losses, plots_dir):
             "max": float(np.max(val_losses)),
             "mean": float(np.mean(val_losses)),
             "final": float(val_losses[-1]),
-            "best_epoch": int(min_val_idx + 1),
+            "best_epoch": int(val_x[min_val_idx]),
         },
         "stability": {
             "train_loss_std": float(np.std(train_losses)),

@@ -25,6 +25,9 @@ class Trainer:
         self.device = self.engine.device
 
         self.epochs = int(self.train_cfg.get("epochs", 1))
+        # Validate every validation_interval epochs and always after the last epoch (default: every epoch).
+        # Used by runs with many short epochs, where validating every epoch would dominate the run time.
+        self.validation_interval = max(1, int(self.train_cfg.get("validation_interval", 1)))
 
         self.optimizer = None
         self.scheduler = None
@@ -56,6 +59,7 @@ class Trainer:
         # Loss tracking for plotting
         self.train_losses = []
         self.val_losses = []
+        self.val_epochs = []  # 1-based epochs at which val_losses were computed
 
         # Recovery checkpointing for crash-safe resume.
         self.resume_checkpoint_interval = int(self.train_cfg.get("resume_checkpoint_interval", 1))
@@ -186,6 +190,7 @@ class Trainer:
             "no_improve_epochs": int(self._no_improve_epochs),
             "train_losses": list(self.train_losses),
             "val_losses": list(self.val_losses),
+            "val_epochs": list(self.val_epochs),
         }
         save_checkpoint(
             self.engine.model,
@@ -217,6 +222,8 @@ class Trainer:
         self._no_improve_epochs = int(checkpoint.get("no_improve_epochs", self._no_improve_epochs))
         self.train_losses = list(checkpoint.get("train_losses", self.train_losses))
         self.val_losses = list(checkpoint.get("val_losses", self.val_losses))
+        # Checkpoints written before validation_interval existed validated every epoch.
+        self.val_epochs = list(checkpoint.get("val_epochs", range(1, len(self.val_losses) + 1)))
 
         epoch = int(checkpoint.get("epoch", 0))
         batch_idx = int(checkpoint.get("batch_idx", -1))
@@ -324,6 +331,16 @@ class Trainer:
             if getattr(self, "_scheduler_per_iteration", False) is False and self.scheduler is not None:
                 self.scheduler.step()
 
+            if (epoch + 1) % self.validation_interval != 0 and epoch + 1 != self.epochs:
+                self.run_logger.info(
+                    "Epoch %d/%d completed | Training Loss=%.4f | no validation (validation_interval=%d)",
+                    epoch + 1, self.epochs, train_loss, self.validation_interval
+                )
+                self.train_losses.append(train_loss)
+                self._save_recovery_checkpoint(epoch=epoch, batch_idx=-1, stage="epoch_end")
+                start_batch = 0
+                continue
+
             # run light validation
             self.engine.model.eval()
             total_val_loss = 0.0
@@ -349,6 +366,7 @@ class Trainer:
             # Collect losses for plotting
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
+            self.val_epochs.append(epoch + 1)
             self._save_recovery_checkpoint(epoch=epoch, batch_idx=-1, stage="epoch_end")
 
             # Experiment Checkpoints + Early Stopping
@@ -388,7 +406,8 @@ class Trainer:
         plot_training_loss(
             self.train_losses, 
             self.val_losses, 
-            self.out_root / "plots"
+            self.out_root / "plots",
+            val_epochs=self.val_epochs,
         )
 
         final_train_loss = self.train_losses[-1] if self.train_losses else float("nan")

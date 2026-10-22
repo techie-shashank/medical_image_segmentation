@@ -1,0 +1,66 @@
+# k = 5 with the update count of the full-data runs (216 epochs x 5 = 1,080 updates per task).
+# Copied from rerun config ft_5_shot.yaml (exp_20260926_112746_e697f061); only epochs and validation_interval changed. Generated 2026-10-22.
+continual:
+  from_scratch: false
+  output_dir: /home/vault/iwi5/iwi5326h/projects/VoxTell/experiments/continual/full_fine_tuning
+  retention_tasks:
+  - dataset:
+      name: aeropath
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/AeroPath/
+    name: aeropath
+  tasks:
+  - dataset:
+      name: skm_tea_lateral_tibial
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_lateral_tibial
+  - dataset:
+      name: skm_tea_medial_tibial
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_medial_tibial
+  - dataset:
+      name: skm_tea_femoral
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_femoral
+  - dataset:
+      name: skm_tea_patellar
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_patellar
+  - dataset:
+      name: skm_tea_medial_meniscus
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_medial_meniscus
+  - dataset:
+      name: skm_tea_lateral_meniscus
+      root: /home/vault/iwi5/iwi5326h/projects/VoxTell/data/skm_tea/
+    name: skm_tea_lateral_meniscus
+  evaluation:
+    checkpoint: last_model.pt
+    extra:
+    - tag: best_validation
+      checkpoint: best_model.pt
+dataset:
+  batch_size: 1
+  patch_size:
+  - 192
+  - 192
+  - 192
+  seed: 42
+  train_fraction: 0.7
+  train_max_cases: 5
+  val_fraction: 0.15
+model:
+  deep_supervision: false
+  device: cuda
+  dir: ./models/voxtell_v1.1
+  reinit_weights: false
+training:
+  epochs: 216
+  optimizer:
+    lr: 0.0001
+    momentum: 0.99
+    nesterov: true
+    poly_power: 1.0
+    weight_decay: 3.0e-05
+  seed: 42
+  use_deterministic_algorithms: true
+  validation_interval: 24

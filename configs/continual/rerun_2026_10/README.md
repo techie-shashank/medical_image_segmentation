@@ -13,6 +13,7 @@ optimiser settings are identical; only the settings listed below differ.
 | `prompt_tuning_scaled_original.yaml` | exp_20260816_161201_b39ea60e | per-task gradient scaling **active**, on tokens and meta-net |
 | `joint_ft.yaml`, `joint_ft_{5,10,20}_shot.yaml` | (new) | joint fine-tuning on all six tasks: upper reference |
 | `shared_lora_replay_no_control.yaml` | exp_20261014_120720_abe47a15 | replay **without** control-task volumes (control task held out) |
+| `ft_5_shot_equal_updates.yaml`, `task_specific_lora_5_shot_equal_updates.yaml`, `shared_lora_5_shot_equal_updates.yaml` | exp_20260926_112746_e697f061, exp_20260926_120018_3ab58c90, exp_20260930_164451_55aada20 | k = 5 with 216 epochs = 1,080 updates per task, as with full data (separates less data from fewer updates); validation every 24 epochs |
 
 The LoRA runs need no `evaluation` section: they are always evaluated with the adapter after the last epoch.
 
@@ -30,6 +31,7 @@ Every run is evaluated twice (and the distillation run three times):
 6. `continual/evaluator.py`, `cli/continual_eval.py`, `cli/continual.py`: releases the text encoder and model of every evaluation cell before the next one (`gc.collect`, `torch.cuda.empty_cache`); checkpoint taken from `continual.evaluation.checkpoint`; `--tag` / `continual.evaluation.extra` write further evaluations into `evaluations/<tag>/`; `continual.evaluation.tasks` lets the evaluated tasks differ from the trained ones (joint training).
 7. `data/datamodule.py`: `dataset.joint_names` builds one dataset from the splits of several task datasets.
 8. `continual/strategies/base.py` (replay): option `replay_memory.include_retention_tasks` (default true) leaves the control task out of the memory; the memory is stored in `continual_state.json` (`replay_memory`, `replay_tasks_added`) and restored on resume, and each task's samples are added only once. Before, a resumed job rebuilt the memory with the control-task volumes only.
+9. `training/trainer.py`, `utils/training_plot.py`: option `training.validation_interval` (default 1) validates every n-th epoch and always after the last one; best-model selection uses the validated epochs only; the recovery checkpoint stores the validated epochs (`val_epochs`).
 
 ## 0. Before anything: same code on the HPC, enough storage
 - The local `code/` was at commit 50a654b when these changes were made. On the HPC, `git status` and `git log -1` must show the same commit and no uncommitted changes; otherwise compare first.
@@ -40,7 +42,7 @@ Every run is evaluated twice (and the distillation run three times):
 ## 1. Before launching: commit and smoke test
 ```bash
 git add -A && git commit -m "Reruns 2026-10: last-epoch checkpoints, ensemble evaluation, CPE-CLIP scaling, joint training"
-for c in ft_original distillation_original prompt_tuning_scaled_original joint_ft shared_lora_replay_no_control; do
+for c in ft_original distillation_original prompt_tuning_scaled_original joint_ft shared_lora_replay_no_control ft_5_shot_equal_updates; do
   sbatch --time=01:00:00 scripts/continual.sh configs/continual/rerun_2026_10/smoke/$c.yaml
 done
 ```
@@ -53,6 +55,8 @@ Check after the four smoke jobs (folders under `.../experiments/continual/smoke_
 
 - [ ] replay without control: log "Replay memory starts empty (include_retention_tasks=false)", then "Replay memory size after task skm_tea_lateral_tibial: 1 samples"; `continual_state.json` contains `replay_memory` (1 then 2 entries) and `replay_tasks_added`; no `lung` prompt among the `[DATA]` lines of `run.log`; the control task (aeropath) still appears in `eval_matrix.csv`.
 
+- [ ] validation interval: per task, `run.log` shows "Epoch 1/3 completed | Training Loss=... | no validation (validation_interval=2)", then "Epoch 2/3 completed ... Validation Loss=..." and "Epoch 3/3 completed ... Validation Loss=..."; `plots/loss_metrics.json` has `"best_epoch"` 2 or 3.
+
 Resume at a task boundary (once on the distillation smoke run, once on the replay smoke run): in its `continual_state.json` set
 `"status": "in_progress"`, `"completed_tasks": [0]`, `"current_task_index": 1`, `"current_checkpoint": null`, then
 ```bash
@@ -63,14 +67,14 @@ sbatch --time=01:00:00 scripts/resume_continual.sh <smoke distillation experimen
 
 ## 2. Launch
 ```bash
-for c in ft_original ft_reverse ft_5_shot ft_10_shot ft_20_shot distillation_original prompt_tuning_scaled_original joint_ft joint_ft_5_shot joint_ft_10_shot joint_ft_20_shot shared_lora_replay_no_control; do
+for c in ft_original ft_reverse ft_5_shot ft_10_shot ft_20_shot distillation_original prompt_tuning_scaled_original joint_ft joint_ft_5_shot joint_ft_10_shot joint_ft_20_shot shared_lora_replay_no_control ft_5_shot_equal_updates task_specific_lora_5_shot_equal_updates shared_lora_5_shot_equal_updates; do
   sbatch scripts/continual.sh configs/continual/rerun_2026_10/$c.yaml
 done
 ```
 Runs that hit the 24 h limit (full-data fine-tuning, distillation, joint) are continued with
 `sbatch scripts/resume_continual.sh <experiment folder>`. Evaluation runs automatically at the end.
 
-Expected duration on one A100 (from the original runs): sequential fine-tuning full data about 24 h training + 2 evaluations (about 5 h), so two jobs; distillation about 36 h + 3 evaluations, two jobs; prompt tuning about 19 h + 2 evaluations, possibly two jobs; joint full data about 24 h (648 samples per epoch, 138 validation volumes), two jobs; few-shot runs a few hours each. A second job is started with `resume_continual.sh`; it continues training or, if training is finished, the remaining evaluations.
+Expected duration on one A100 (from the original runs): sequential fine-tuning full data about 24 h training + 2 evaluations (about 5 h), so two jobs; distillation about 36 h + 3 evaluations, two jobs; prompt tuning about 19 h + 2 evaluations, possibly two jobs; joint full data about 24 h (648 samples per epoch, 138 validation volumes), two jobs; few-shot runs a few hours each; the three equal-updates runs about 22 h training each (1,080 updates per task as with full data, 9 validations per task), sequential fine-tuning possibly two jobs. With 6 parallel jobs: start the long runs first (distillation, full-data fine-tuning, joint full data, equal-updates runs). A second job is started with `resume_continual.sh`; it continues training or, if training is finished, the remaining evaluations.
 
 ## 3. After the runs
 Copy the new experiment folders and SLURM logs into `results/hpc/` of the thesis repository (not the `smoke_test/` folders); the
