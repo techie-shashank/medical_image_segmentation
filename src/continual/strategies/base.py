@@ -16,6 +16,7 @@ import yaml
 from src.continual.utils import build_base_model_cfg, save_task_snapshot
 from src.continual.task_manager import ContinualTask, ContinualTaskManager, merge_dicts
 from src.data.datamodule import VoxTellDataModule
+from src.data.dataset import TrainingSample
 from src.engine.model_engine import VoxTellEngine
 from src.training.trainer import Trainer
 from src.utils.model_helpers import log_model_params
@@ -142,6 +143,11 @@ class BaseContinualStrategy(ABC):
         if not self._should_use_replay_memory():
             return
 
+        # include_retention_tasks: false leaves the control task out of the memory, so it stays held out.
+        if not bool(self._replay_memory_cfg().get("include_retention_tasks", True)):
+            self.logger.info("Replay memory starts empty (include_retention_tasks=false)")
+            return
+
         retention_tasks = self.task_manager.retention_tasks()
         if not retention_tasks:
             return
@@ -168,6 +174,27 @@ class BaseContinualStrategy(ABC):
         if sampled:
             self.replay_memory.extend(sampled)
         self._trim_replay_memory()
+
+    @staticmethod
+    def _sample_to_dict(sample: TrainingSample) -> dict[str, Any]:
+        return {
+            "image_path": str(sample.image_path),
+            "prompts": list(sample.prompts or []),
+            "mask_paths": [None if m is None else str(m) for m in sample.mask_paths],
+            "mask_labels": list(sample.mask_labels),
+        }
+
+    @staticmethod
+    def _sample_from_dict(item: dict[str, Any]) -> TrainingSample:
+        return TrainingSample(
+            image_path=Path(item["image_path"]),
+            prompts=list(item["prompts"]),
+            mask_paths=[None if m is None else Path(m) for m in item["mask_paths"]],
+            mask_labels=list(item["mask_labels"]),
+        )
+
+    def _store_replay_memory(self, state: dict[str, Any]) -> None:
+        state["replay_memory"] = [self._sample_to_dict(x) for x in self.replay_memory]
 
     def _build_task_dataset_cfg(self, task: ContinualTask) -> dict[str, Any]:
         dataset_cfg = dict(task.dataset_cfg)
@@ -235,7 +262,17 @@ class BaseContinualStrategy(ABC):
             str(resume_checkpoint) if resume_checkpoint else "<none>",
         )
 
-        self._initialize_replay_memory()
+        # The replay memory is kept in continual_state.json, so that a resumed job continues with the same
+        # memory (control-task entries and the entries of all completed tasks) instead of rebuilding it.
+        if self._should_use_replay_memory():
+            if state.get("replay_memory") is not None:
+                self.replay_memory = [self._sample_from_dict(x) for x in state["replay_memory"]]
+                self.logger.info("Restored replay memory with %d samples from the run state", len(self.replay_memory))
+            else:
+                self._initialize_replay_memory()
+                state.setdefault("replay_tasks_added", [])
+                self._store_replay_memory(state)
+                self._save_state(state)
         self.engine = self.build_engine()
 
         # A job that resumes at a task boundary (no checkpoint inside the next task) must start the
@@ -276,7 +313,12 @@ class BaseContinualStrategy(ABC):
             task_metrics = trainer.fit(datamodule, resume_from=task_resume_checkpoint)
             self.logger.info("Task %s training completed", task.name)
 
-            self._update_replay_memory(task_datamodule)
+            # Add the task's samples once, also if the end of this task is repeated after a resume.
+            added = {int(i) for i in state.get("replay_tasks_added", [])}
+            if self._should_use_replay_memory() and task.index not in added:
+                self._update_replay_memory(task_datamodule)
+                state["replay_tasks_added"] = sorted(added | {task.index})
+                self._store_replay_memory(state)
             if self._should_use_replay_memory() and self.replay_memory:
                 self.logger.info(
                     "Replay memory size after task %s: %d samples (fraction=%.3f)",
