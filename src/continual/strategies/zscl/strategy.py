@@ -11,6 +11,7 @@ from src.continual.task_manager import ContinualTask, ContinualTaskManager
 from src.continual.strategies.base import BaseContinualStrategy
 from src.continual.strategies.registry import register_strategy
 from src.engine.model_engine import VoxTellEngine
+from src.utils.checkpoint import atomic_torch_save
 
 
 @register_strategy
@@ -180,9 +181,9 @@ class ZSCLStrategy(BaseContinualStrategy):
     # ------------------------------------------------------------------
     def _save_ensemble(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(
+        atomic_torch_save(
             {"network_weights": self.ensemble_model.state_dict(), "ensemble_steps": int(self._ensemble_steps)},
-            str(path),
+            path,
         )
 
     def _load_ensemble(self, path: Path) -> None:

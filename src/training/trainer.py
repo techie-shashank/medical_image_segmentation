@@ -10,7 +10,7 @@ import monai
 
 from src.training.losses import deep_supervision_loss
 from src.training.optimizer import build_optimizer_and_scheduler
-from src.utils.checkpoint import load_checkpoint, save_checkpoint
+from src.utils.checkpoint import atomic_torch_save, load_checkpoint, save_checkpoint
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -248,7 +248,7 @@ class Trainer:
     def _save_last_model(self, checkpoints_dir: Path) -> None:
         """Save the parameters after the last epoch (the model carried forward to the next task)."""
         path = checkpoints_dir / "last_model.pt"
-        torch.save({"network_weights": self.engine.model.state_dict()}, str(path))
+        atomic_torch_save({"network_weights": self.engine.model.state_dict()}, path)
         self.run_logger.info("Last-epoch model saved at %s", path)
 
     def fit(self, datamodule, resume_from: str | Path | None = None):
@@ -375,7 +375,7 @@ class Trainer:
                 self.best_val_loss = val_loss
                 best_path = checkpoints_dir / f"best_model.pt"
                 # Weights only: the checkpoint is used for evaluation, never to resume (that uses latest_recovery.pt).
-                torch.save({"network_weights": self.engine.model.state_dict()}, str(best_path))
+                atomic_torch_save({"network_weights": self.engine.model.state_dict()}, best_path)
                 self.run_logger.info("New best model saved (val_loss=%.6f) at epoch=%d", val_loss, epoch)
                 self._no_improve_epochs = 0
             else:

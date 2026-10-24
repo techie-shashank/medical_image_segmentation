@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 import torch
+
+
+def atomic_torch_save(obj: Any, path: str | Path) -> None:
+    """Save to a temporary file and rename it onto ``path``.
+
+    The rename is atomic, so a job that is killed during the write (e.g. at the time limit) leaves the
+    previous file intact instead of a truncated one.
+    """
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(obj, str(tmp))
+    os.replace(tmp, path)
 
 
 def save_checkpoint(
@@ -23,7 +36,7 @@ def save_checkpoint(
         payload["scheduler_state"] = scheduler.state_dict()
     if metadata:
         payload.update(metadata)
-    torch.save(payload, str(path))
+    atomic_torch_save(payload, path)
 
 
 def load_checkpoint(path: str | Path, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:

@@ -8,6 +8,7 @@ from torch import nn
 
 from src.continual.strategies.lora.utils import lora_state_dict, _matches_target
 from src.continual.strategies.lora.common.layers import LoRALayer, PlainMultiheadAttentionLoRA
+from src.utils.checkpoint import atomic_torch_save
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -115,7 +116,7 @@ def save_lora_adapter(model: nn.Module, save_path: str | Path, bias: str = "none
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     state = lora_state_dict(model, bias=bias)
-    torch.save(state, save_path)
+    atomic_torch_save(state, save_path)
     
     # Log adapter details
     num_params = sum(p.numel() for p in [v for v in state.values() if isinstance(v, torch.Tensor)])
